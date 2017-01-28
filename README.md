@@ -29,7 +29,7 @@ Arduino code to automatically open and close a door based on calculating sunrise
 * By default the door is set to automatically close and there are not any sensors to detect if an animal is in front of door.
 * When closing the door the motor runs at 50% speed
   
-# Power Usuage:
+# Power Usage:
 
 * In sleep mode: ~8mA
 * While operating actuator: ~.51A
