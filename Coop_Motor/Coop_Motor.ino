@@ -29,8 +29,8 @@
  * The RTC keeps track of time and alarms that generate an interrupt.  
  * Two alarms are used, ALARM_1 is set for sunrise plus offset to open the door.
  * ALARM_2 is set for sunset plus offset to close the door.  Also when 
- * ALARM_2 is trigger it will calcuate the next day's alarms.
- * The sunrise and sunset alarms are calcuated using the NOAA spreadsheet:
+ * ALARM_2 is trigger it will calculate the next day's alarms.
+ * The sunrise and sunset alarms are calculated using the NOAA spreadsheet:
  * (http://www.esrl.noaa.gov/gmd/grad/solcalc/calcdetails.html)
  *  Upon opening, the motor will run until it reaches a defined timeout.  
  *  When closing the motor will run for timeout*2 since the motor runs
@@ -42,8 +42,8 @@
  *    * to what is blocking the door.  This could also cause
  *    * the motor to burn out since it will run for a specified
  *    * amount of time.
- *    * By default the door is set to automatically close and
- *    * there are not any sensors to detect animal in front of door
+ *    * By default the door is set to automatically close and there are not 
+ *    * any sensors to detect if an animal is in front of door.
  *    * When closing the door the motor runs at 50% speed
  *   
  *   Power Usuage:
