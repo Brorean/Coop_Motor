@@ -7,8 +7,6 @@
 #include <math.h>
 
 /* 
- * Version: 3.0
- * Date: 1/27/2017
  * 
  * Hardware: 
  *    * Atmega328p (uses interrupts specific to that device)
