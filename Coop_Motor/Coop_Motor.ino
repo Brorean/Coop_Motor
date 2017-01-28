@@ -62,7 +62,7 @@ const uint8_t alarmInt = 0;  //interrupt # for alarm
 const uint8_t buttonInt = 1; //interrupt # for push buttons
 boolean       alarmIntFlag = false;  //Flag for alarm interrupt
 boolean       buttonIntFlag = false; //Flag for button interrupt
-boolean       globalIsSunset = false; //Flag for motor close
+boolean       isSunsetClose = false; //Flag for motor close
 
 /* Define pins for push buttons and motor */
 const uint8_t openButtonPin = 7; //button input to open door
@@ -78,7 +78,7 @@ uint32_t       startTime = 0;  //Is set when automatically opening door
 boolean        motorMoving = false; //Flag for motor moving
 
 /* Variables to mathematically determine sunrise/sunset */
-const float latitude = 38.89511 // (+ to N)
+const float latitude = 38.89511; // (+ to N)
 const float longitude = -77.03637; // (- to E)
 const float timezone = -5.0;
 const float julianNoon = 0.5;
@@ -144,11 +144,11 @@ void loop() {
   } else if (alarmIntFlag == true) {
     alarmIntFlag = false;
     setupTime();  //Re-sync time library with RTC
-    globalIsSunset = handleAlarm();
+    isSunsetClose = handleAlarm();
   } else if (startTime != 0) { //Motor is moving from Alarm
-    checkForMotorStop(globalIsSunset);
+    checkForMotorStop(isSunsetClose);
   } else {
-    globalIsSunset = false;
+    isSunsetClose = false;
     Serial.println(F("Sleeping"));
     motorStop(); //Just In Case but shouldn't be necessary
     Serial.flush();
@@ -229,11 +229,11 @@ void setupAlarms(boolean isSunset) {
   Serial.println(sunsetMinutes);
 }
 
-void checkForMotorStop(boolean isSunset) {
+void checkForMotorStop(boolean isAutoClosing) {
   uint32_t currentTime = millis();
   uint16_t tempTimeout = 0;
   
-  if (isSunset) {
+  if (isAutoClosing) {
     tempTimeout = motorCloseTimeout;
   } else {
     tempTimeout = motorTimeout;
@@ -246,6 +246,7 @@ void checkForMotorStop(boolean isSunset) {
 }
 
 boolean handleAlarm() {
+  boolean isAutoClosing = false;
   
   if (RTC.alarm(ALARM_1)) {
     Serial.print(F("Alarm_1 Sunrise\t"));
@@ -266,14 +267,14 @@ boolean handleAlarm() {
     Serial.println(F("Alarm_2 Sunset"));
     if (autoClose) {
       motorClose(false);
-      setupAlarms(true);
-      return true;
-    }
+      isAutoClosing = true;
+    } 
+    setupAlarms(true);
   } else {
     Serial.println(F("Interrupt but no alarm"));
   }
 
-  return false;
+  return isAutoClosing;
 }
 
 void handleButtonPush() {
