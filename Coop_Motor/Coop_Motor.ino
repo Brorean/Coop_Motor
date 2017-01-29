@@ -266,6 +266,10 @@ boolean handleAlarm() {
     if (autoClose) {
       motorClose(false);
       isAutoClosing = true;
+      startTime = millis(); //Start timer to check for timeout
+      if (startTime == 0) {
+        startTime = 1;
+      }
     } 
     setupAlarms(true);
   } else {
