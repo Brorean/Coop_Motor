@@ -11,6 +11,10 @@ Arduino code to automatically open and close a door based on calculating sunrise
   * LM2596S-ADJ DC-DC 3A Buck Converter (12v to 5v)
   * 12v 7amp-hour battery
   * 12v 7 watt Amorphous Solar Panel
+
+# Libraries  
+  * [Arduino DS3232RTC Library by Jack Christensen] (https://github.com/JChristensen/DS3232RTC)
+  * Time and TimeAlarms by Michael Margolis
   
 # Normal operation:
   
