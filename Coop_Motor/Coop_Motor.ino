@@ -10,7 +10,7 @@
  * 
  * Hardware: 
  *    * Atmega328p (uses interrupts specific to that device)
- *      * Self built, doesn't not have USB or voltage regulator
+ *      * Self built, doesn't have USB or voltage regulator
  *    * BTS7960B Motor Driver to operate the linear actuator
  *    * DS3231 Real Time Clock (RTC) to keep track of time and set alarms
  *    * 12v Linear actuator
@@ -211,9 +211,9 @@ void setupAlarms(boolean isSunset) {
     delay(waitTime);
   }
   
-  RTC.setAlarm(ALM1_MATCH_HOURS, 0, sunriseHour, sunriseMinutes, 0);
+  RTC.setAlarm(ALM1_MATCH_HOURS, 0, sunriseMinutes, sunriseHour, 0);
   RTC.alarmInterrupt(ALARM_1, true);
-  RTC.setAlarm(ALM2_MATCH_HOURS, 0, sunsetHour, sunsetMinutes, 0);
+  RTC.setAlarm(ALM2_MATCH_HOURS, 0, sunsetMinutes, sunsetHour, 0);
   RTC.alarmInterrupt(ALARM_2, true);
   
   Serial.print(F("Setting Sunrise alarm for "));
