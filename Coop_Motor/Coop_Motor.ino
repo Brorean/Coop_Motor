@@ -5,6 +5,7 @@
 #include <TimeAlarms.h>
 #include <Wire.h>
 #include <math.h>
+#include "Coop_Motor.h"
 
 /* 
  * 
@@ -19,20 +20,24 @@
  *    * 12v 7amp-hour battery
  *    * 12v 7 watt Amorphous Solar Panel
  * 
+ * Libraries:
+ *     * Arudino DS3232RTC Library by Jack Christensen
+ *     * Time and TimeAlarms by Michael Margolis
+ *     
  * Normal operation:
  * 
  * There are two push buttons; one to open the door and another to 
  * close the door.  They are wired to different digital inputs but
  * both go to the same interrupt on the board.
  * The RTC keeps track of time and alarms that generate an interrupt.  
- * Two alarms are used, ALARM_1 is set for sunrise plus offset to open the door.
- * ALARM_2 is set for sunset plus offset to close the door.  Also when 
- * ALARM_2 is trigger it will calculate the next day's alarms.
+ * Two alarms are used, ALARM_1 is set for sunrise plus offset to open the door and
+ * is set for sunset plus offset to close the door.  
+ * ALARM_2 is set for 10 minutes after midnight to calculate and set the sunrise 
+ * alarm for ALARM_1.
  * The sunrise and sunset alarms are calculated using the NOAA spreadsheet:
  * (http://www.esrl.noaa.gov/gmd/grad/solcalc/calcdetails.html)
- *  Upon opening, the motor will run until it reaches a defined timeout.  
- *  When closing the motor will run for timeout*2 since the motor runs
- *  at 50% speed.
+ *  When opening and closing the door, the motor will run until it 
+ *  reaches a defined timeout.  
  * 
  * Cautions:
  *    * There are no sensors to determine if someone/thing is
@@ -42,7 +47,6 @@
  *    * amount of time.
  *    * By default the door is set to automatically close and there are not 
  *    * any sensors to detect if an animal is in front of door.
- *    * When closing the door the motor runs at 50% speed
  *   
  *   Power Usuage:
  *    * In sleep mode: ~8mA
@@ -50,207 +54,160 @@
  *    * Actuator: 3.5A to start
  */
  
- /* Turn on/off autoclose */
-const boolean autoClose = true;
-
- /* Define pins for interrupts */
-const uint8_t wakePin = 2; //pin used for waking up
-const uint8_t buttonPin = 3; //pin used for waking up from button push
-const uint8_t alarmInt = 0;  //interrupt # for alarm
-const uint8_t buttonInt = 1; //interrupt # for push buttons
-boolean       alarmIntFlag = false;  //Flag for alarm interrupt
-boolean       buttonIntFlag = false; //Flag for button interrupt
-boolean       isSunsetClose = false; //Flag for motor close
-
-/* Define pins for push buttons and motor */
-const uint8_t openButtonPin = 7; //button input to open door
-const uint8_t closeButtonPin = 8; //button input to close door
-const uint8_t RPWMPin = 10; //Motor R-PWM
-const uint8_t LPWMPin = 11; //Motor L-PWM
-const uint8_t enablePin = 12; //Motor R/L Enable
-
-/* Define variables for motor movement */
-const uint16_t motorTimeout = 25000; //Run motor for this amount of time
-const uint16_t motorCloseTimeout = motorTimeout * 2;
-uint32_t       startTime = 0;  //Is set when automatically opening door
-boolean        motorMoving = false; //Flag for motor moving
-
-/* Variables to mathematically determine sunrise/sunset */
-const float latitude = 38.89511; // (+ to N)
-const float longitude = -77.03637; // (- to E)
-const float timezone = -5.0;
-const float julianNoon = 0.5;
-const float sunriseOffset = 30.0; //minutes to add to sunrise
-const float sunsetOffset  = 20.0; //minutes to add to sunset
-const uint8_t minutesInHour = 60;
-
-/* Function for the alarm interrupt */
-void wakeUpNow() {
-  sleep_disable();
-  detachInterrupt(alarmInt);
-  detachInterrupt(buttonInt);
-  alarmIntFlag = true;
-}
-
-/* Function for the push button interrupt */
-void wakeUpButton() {
-  sleep_disable();
-  detachInterrupt(buttonInt);
-  detachInterrupt(alarmInt);
-  buttonIntFlag = true;
-}
-
-void sleepNow() {
-  //delay(1000);
-  //set_sleep_mode(SLEEP_MODE_IDLE);
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-  cli();
-  sleep_enable();
-  sei();
-  attachInterrupt(alarmInt, wakeUpNow, LOW);
-  attachInterrupt(buttonInt, wakeUpButton, RISING);
-  sleep_cpu();
-
-  //wakeup starts here
-  sleep_disable();
-}
-
 void setup() {
   Serial.begin(115200);
 
-  setupTime();
+  init_rtc_time();
   
-  pinMode(wakePin, INPUT);
-  pinMode(buttonPin, INPUT);
-  pinMode(openButtonPin, INPUT);
-  pinMode(closeButtonPin, INPUT);
+  pinMode(ALARM_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT);
+  pinMode(OPEN_BUTTON_PIN, INPUT);
+  pinMode(CLOSE_BUTTON_PIN, INPUT);
 
-  pinMode(RPWMPin, OUTPUT);
-  pinMode(LPWMPin, OUTPUT);
-  pinMode(enablePin, OUTPUT);
-  motorStop();
- 
-  setupAlarms(false);
+  pinMode(MOTOR_R_PWM_PIN, OUTPUT);
+  pinMode(MOTOR_L_PWM_PIN, OUTPUT);
+  pinMode(MOTOR_ENABLE_PIN, OUTPUT);
+  stop_door_movement();
+
+  clear_rtc_status_register();
+  setup_alarms(true, false);
   
   Serial.println(F("RDY"));
   
 }
 
 void loop() {
-  if (buttonIntFlag == true) {
-    handleButtonPush();
-  } else if (alarmIntFlag == true) {
-    alarmIntFlag = false;
-    setupTime();  //Re-sync time library with RTC
-    isSunsetClose = handleAlarm();
-  } else if (startTime != 0) { //Motor is moving from Alarm
-    checkForMotorStop(isSunsetClose);
-  } else {
-    isSunsetClose = false;
+  if (g_button_int_flag == true)  {
+    handle_button_push_interrupt();
+  } 
+  else if (g_alarm_int_flag == true) {
+    g_alarm_int_flag = false;
+    init_rtc_time();  //Re-sync time library with RTC
+    handle_alarm_interrupt();
+    clear_rtc_status_register();
+  } 
+  else if (g_motor_start_time != 0) { //Motor is moving from Alarm
+    check_for_door_movement_timeout();
+  } 
+  else if (g_button_no_input_time != 0) {  //waiting for button timeout
+    if (!(check_for_no_button_input_timeout())) {
+      handle_button_push_interrupt();
+    }
+  }
+  else {
     Serial.println(F("Sleeping"));
-    motorStop(); //Just In Case but shouldn't be necessary
+    stop_door_movement(); //Just In Case but shouldn't be necessary
     Serial.flush();
-    sleepNow();
+    put_to_sleep();
   }
 }
+/* Below functions are for handling interrupts
+ *  and putting the microcontroller to sleep
+ */
+ 
+/* Function for the alarm interrupt */
+void wake_up_from_alarm() {
+  sleep_disable();
+  detachInterrupt(ALARM_INTERRUPT);
+  detachInterrupt(BUTTON_INTERRUPT);
+  g_alarm_int_flag = true;
+}
 
-void setupAlarms(boolean isSunset) {
-  time_t t_now = now(); //get current RTC time
-  time_t t_temp = t_now;
-  printDateTime(t_now);
+/* Function for the push button interrupt */
+void wake_up_from_button_press() {
+  sleep_disable();
+  detachInterrupt(BUTTON_INTERRUPT);
+  detachInterrupt(ALARM_INTERRUPT);
+  g_button_int_flag = true;
+}
 
-  if (isSunset) {
-    int hoursToMidnight = 24 - hour(t_now);
-    t_temp = t_now + (hoursToMidnight * minutesInHour * 60);
-    printDateTime(t_temp);
+void put_to_sleep() {
+  //delay(1000);
+  //set_sleep_mode(SLEEP_MODE_IDLE);  //used for debugging, don't want to shutdown all functions
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  cli();
+  sleep_enable();
+  sei();
+  attachInterrupt(ALARM_INTERRUPT, wake_up_from_alarm, LOW);
+  attachInterrupt(BUTTON_INTERRUPT, wake_up_from_button_press, RISING);
+  sleep_cpu();
+
+  //wakeup starts here
+  sleep_disable();
+}
+
+/* Below functions are related to setting alarms, handling alarms
+ *  and RTC specific functions
+ */
+ 
+void setup_alarms(boolean is_init, boolean is_alarm_2) {
+  uint8_t sunrise_hour = 0;
+  uint8_t sunrise_minutes = 0;
+  uint8_t sunset_hour = 0;
+  uint8_t sunset_minutes = 0;
+
+  get_sunrise_and_sunset(&sunrise_hour, &sunrise_minutes, &sunset_hour, &sunset_minutes);
+
+  if (is_init) {
+    //This is called from the setup() function
+    if (is_sunrise_coming(sunrise_hour, sunrise_minutes)) {
+      //the next interrupt is sunrise
+      Serial.println(F("INIT, next ALARM_1 is sunrise"));
+      g_is_sunrise = true;
+      set_alarms_times(sunrise_hour, sunrise_minutes);
+    } else {
+      //the next interrupt is sunset
+      Serial.println(F("INIT, next ALARM_1 is sunset"));
+      g_is_sunrise = false;
+      set_alarms_times(sunset_hour, sunset_minutes);
+    }
+  } else {
+    if (is_alarm_2) {
+      //the next interrupt is sunrise
+      Serial.println(F("ALARM_2, setting ALARM_1 to sunrise"));
+      g_is_sunrise = true;
+      set_alarms_times(sunrise_hour, sunrise_minutes);
+    } else {
+      //the next interrupt is sunset
+      Serial.println(F("ALARM_1, setting ALARM_1 to sunset"));
+      g_is_sunrise = false;
+      set_alarms_times(sunset_hour, sunset_minutes);
+    }
   }
-  /* All the maths to calculate sunrise and sunset based on month/day */
-  float JDN = getJulianDayFromUnix(t_temp);
-  float JC = getJulianCenturyFromJulianDay(JDN);
-  float geomMeanLongSun = getGeomMeanLongSunInDeg(JC);
-  float geomMeanAnomSun = getGeomMeanAnomSunInDeg(JC);
-  float eccentEarthOrbit = getEccentEarthOrbit(JC);
-  float sunEqOfCtr = getSunEqOfCtr(JC, geomMeanAnomSun);
-  float sunTrueLong = getSunTrueLongInDeg(geomMeanLongSun, sunEqOfCtr);
-  //float sunTrueAnom = getSunTrueAnomInDeg(geomMeanAnomSun, sunEqOfCtr);
-  //float sunRadVector = getSunRadVectorInAUs(eccentEarthOrbit, sunTrueAnom);
-  float sunAppLong = getSunAppLongInDeg(sunTrueLong, JC);
-  float meanObliqEcliptic = getMeanObliqEclipticInDeg(JC);
-  float obliqCorr = getObliqCorrInDeg(meanObliqEcliptic, JC);
-  //float sunRtAscen = getSunRtAscenInDeg(sunAppLong, obliqCorr);
-  float sunDeclin = getSunDeclinInDeg(sunAppLong, obliqCorr);
-  float varY = getVarY(obliqCorr);
-  float eqOfTime = getEqOfTimeInMin(varY, eccentEarthOrbit, geomMeanLongSun, geomMeanAnomSun);
-  float haSunrise = getHASunriseInDeg(sunDeclin);
-  float solarNoon = getSolarNoon(eqOfTime);
-  float sunrise = getSunrise(solarNoon, haSunrise);
-  float sunset = getSunset(solarNoon, haSunrise);
+  
+  Serial.print(F("Sunrise time: "));
+  Serial.print(sunrise_hour);
+  Serial.print(F(":"));
+  Serial.println(sunrise_minutes);
 
-  float minutesFromMidnightSunrise = getNumMinutesFromJulianFraction(sunrise) + sunriseOffset;
-  uint8_t sunriseHour = minutesFromMidnightSunrise / minutesInHour;
-  uint8_t  sunriseMinutes = (uint16_t)minutesFromMidnightSunrise % minutesInHour;
+  Serial.print(F("Sunset time: "));
+  Serial.print(sunset_hour);
+  Serial.print(F(":"));
+  Serial.println(sunset_minutes);
+}
 
-  float minutesFromMidnightSunset = getNumMinutesFromJulianFraction(sunset) + sunsetOffset;
-  uint8_t sunsetHour = minutesFromMidnightSunset / minutesInHour;
-  uint8_t  sunsetMinutes = (uint16_t)minutesFromMidnightSunset % minutesInHour;
+void set_alarms_times(uint8_t alarm_hour, uint8_t alarm_minutes) {
+  RTC.setAlarm(ALM1_MATCH_HOURS, 0, alarm_minutes, alarm_hour, 0);
+  RTC.alarmInterrupt(ALARM_1, true);
+  
+  RTC.setAlarm(ALM2_MATCH_HOURS, 0, 0, 10, 0);
+  RTC.alarmInterrupt(ALARM_2, true); 
+}
 
-  if (isSunset) {
-    uint32_t waitTime = 1;
-    if (sunsetHour > hour(t_now)) {
-      waitTime = minutesFromMidnightSunset - (hour(t_now) * minutesInHour + minute(t_now));
-      waitTime = ((waitTime + 1) * 60) * 1000; //add one minute, convert to milliseconds
-    } else if (sunsetHour == hour(t_now)) {
-      if (sunsetMinutes >= minute(t_now)) {
-        waitTime = minutesFromMidnightSunset - (hour(t_now) * minutesInHour + minute(t_now));
-        waitTime = ((waitTime + 1) * 60)* 1000; //add one minute, convert to milliseconds
+void handle_alarm_interrupt() {  
+  if (RTC.alarm(ALARM_1)) {
+    Serial.print(F("Alarm_1\t"));
+    if (g_is_sunrise) {
+      setup_alarms(false, false); //set sunset alarm
+      open_door();
+    } else {
+      if (AUTO_CLOSE) {
+        //ALARM_2 will re-set the sunrise alarm
+        close_door();
       }
     }
-    Serial.print(F("Going to delay setting sunset alarm: "));
-    Serial.println(waitTime);
-    Serial.flush();
-    delay(waitTime);
-  }
-  
-  RTC.setAlarm(ALM1_MATCH_HOURS, 0, sunriseMinutes, sunriseHour, 0);
-  RTC.alarmInterrupt(ALARM_1, true);
-  RTC.setAlarm(ALM2_MATCH_HOURS, 0, sunsetMinutes, sunsetHour, 0);
-  RTC.alarmInterrupt(ALARM_2, true);
-  
-  Serial.print(F("Setting Sunrise alarm for "));
-  Serial.print(sunriseHour);
-  Serial.print(F(":"));
-  Serial.println(sunriseMinutes);
-
-  Serial.print(F("Setting Sunset alarm for "));
-  Serial.print(sunsetHour);
-  Serial.print(F(":"));
-  Serial.println(sunsetMinutes);
-}
-
-void checkForMotorStop(boolean isAutoClosing) {
-  uint32_t currentTime = millis();
-  uint16_t tempTimeout = 0;
-  
-  if (isAutoClosing) {
-    tempTimeout = motorCloseTimeout;
-  } else {
-    tempTimeout = motorTimeout;
-  }
-  
-  if ((currentTime - startTime) > tempTimeout) {
-    startTime = 0;
-    motorStop();
-  }
-}
-
-boolean handleAlarm() {
-  boolean isAutoClosing = false;
-  
-  if (RTC.alarm(ALARM_1)) {
-    Serial.print(F("Alarm_1 Sunrise\t"));
-    motorOpen();
-    startTime = millis(); //Start timer to check for timeout
-    if (startTime == 0) {
+    g_motor_start_time = millis(); //Start timer to check for timeout
+    if (g_motor_start_time == 0) {
       /* Since the chip is put into power down mode there
        * is a small possiblity that the first millis()
        * could return 0
@@ -258,105 +215,212 @@ boolean handleAlarm() {
        * is used to determine if the motor is not running
        * and in this case the motor should be running
        */
-      startTime = 1;
+      g_motor_start_time = 1;
     }
   } else if (RTC.alarm(ALARM_2)) {
-    //Its sunset, close door generate new alarms
-    Serial.println(F("Alarm_2 Sunset"));
-    if (autoClose) {
-      motorClose(false);
-      isAutoClosing = true;
-      startTime = millis(); //Start timer to check for timeout
-      if (startTime == 0) {
-        startTime = 1;
-      }
-    } 
-    setupAlarms(true);
+    //It is midnight, set alarm_1 to sunrise
+    Serial.println(F("Alarm_2 Set Sunrise Time"));
+    setup_alarms(false, true);
   } else {
     Serial.println(F("Interrupt but no alarm"));
   }
-
-  return isAutoClosing;
 }
 
-void handleButtonPush() {
-  uint8_t openButtonStatus = digitalRead(openButtonPin);
-  uint8_t closeButtonStatus = digitalRead(closeButtonPin);
+void get_sunrise_and_sunset(uint8_t *sunrise_hour, uint8_t *sunrise_minutes, uint8_t *sunset_hour, uint8_t *sunset_minutes) {
+  time_t current_time = now(); //get current RTC time
+  print_date_time(current_time);
+  
+  /* All the maths to calculate sunrise and sunset based on month/day */
+  float jdn = get_julian_day_from_unix(current_time);
+  float jc = get_julian_century_from_julian_day(jdn);
+  float geom_mean_long_sun = get_geom_mean_long_sun_in_deg(jc);
+  float geom_mean_anom_sun = get_geom_mean_anom_sun_in_deg(jc);
+  float eccent_earth_orbit = get_eccent_earth_orbit(jc);
+  float sun_eq_of_ctr = get_sun_eq_of_ctr(jc, geom_mean_anom_sun);
+  float sun_true_long = get_sun_true_long_in_deg(geom_mean_long_sun, sun_eq_of_ctr);
+  //float sun_true_anom = get_sun_true_anom_in_deg(geom_mean_anom_sun, sun_eq_of_ctr);
+  //float sun_rad_vector = get_sun_rad_vector_in_AUs(eccent_earth_orbit, sun_true_anom);
+  float sun_app_long = get_sun_app_long_in_deg(sun_true_long, jc);
+  float mean_obliq_ecliptic = get_mean_obliq_ecliptic_in_deg(jc);
+  float obliq_corr = get_obliq_corr_in_deg(mean_obliq_ecliptic, jc);
+  //float sun_rt_ascen = get_sun_rt_ascen_in_deg(sun_app_long, obliq_corr);
+  float sun_declin = get_sun_declin_in_deg(sun_app_long, obliq_corr);
+  float var_y = get_var_y(obliq_corr);
+  float eq_of_time = get_eq_of_time_in_min(var_y, eccent_earth_orbit, geom_mean_long_sun, geom_mean_anom_sun);
+  float ha_sunrise = get_ha_sunrise_in_deg(sun_declin);
+  float solar_noon = get_solar_noon(eq_of_time);
+  float sunrise = get_sunrise(solar_noon, ha_sunrise);
+  float sunset = get_sunset(solar_noon, ha_sunrise);
 
-  if ((openButtonStatus == HIGH) && (closeButtonStatus == HIGH)) {
-    motorStop();
-  } else if (openButtonStatus == HIGH) {
-    motorOpen();
-  } else if (closeButtonStatus == HIGH) {
-    motorClose(true); 
-  } else {
-    motorStop();
-    buttonIntFlag = false;
+  float minutes_from_midnight_sunrise = get_num_minutes_from_julian_fraction(sunrise) + SUNRISE_OFFSET;
+  *sunrise_hour = minutes_from_midnight_sunrise / MINUTES_IN_HOUR;
+  *sunrise_minutes = (uint16_t)minutes_from_midnight_sunrise % MINUTES_IN_HOUR;
+
+  float minutes_from_midnight_sunset = get_num_minutes_from_julian_fraction(sunset) + SUNSET_OFFSET;
+  *sunset_hour = minutes_from_midnight_sunset / MINUTES_IN_HOUR;
+  *sunset_minutes = (uint16_t)minutes_from_midnight_sunset % MINUTES_IN_HOUR;
+}
+
+boolean is_sunrise_coming(uint8_t sunrise_hour, uint8_t sunrise_minutes) {
+  boolean is_sunrise = false;
+  time_t current_time = now(); //get current RTC time
+  print_date_time(current_time);
+
+  int current_hour = hour(current_time);
+  //find out if the current hour is less than sunrise hour...if so sunrise hasn't happened
+  if (current_hour == sunrise_hour) {
+    int current_minute = minute(current_time);
+    if (current_minute < sunrise_minutes) {
+      is_sunrise = true;
+    } 
+  } else if (current_hour < sunrise_hour) {
+    is_sunrise = true;
+  }
+    
+  return is_sunrise;  
+}
+
+//Alarm has happened and door is auto opening/closing...check for timeout
+void check_for_door_movement_timeout() {
+  uint32_t current_time = millis();
+  
+  if ((current_time - g_motor_start_time) > MOTOR_MOVING_TIMEOUT) {
+    g_motor_start_time = 0;
+    stop_door_movement();
   }
 }
 
-void setupTime() {
+void inline clear_rtc_status_register() {
+  /* Clear the Control Status Register
+   *  This is apparently fixes a bug...needs to be called after
+   *  alarm is triggerred and handled
+   */
+  RTC.writeRTC(RTC_STATUS, 0x00);
+}
+
+void init_rtc_time() {
   setSyncProvider(RTC.get);
   if (timeStatus() != timeSet) {
     Serial.println(F("Time set failed"));
   }  
 }
 
-void motorClose(boolean fullPower) {
-  if (motorMoving == false) {
+/* used for debugging the RTC */
+void print_rtc_sram_values(boolean print_all_sram) {
+  uint8_t addr = 0;
+  uint8_t values[SRAM_START_ADDR + SRAM_SIZE]; //could use malloc
+  uint16_t range = 0;
+  if (print_all_sram) {
+    range = SRAM_START_ADDR + SRAM_SIZE;  
+  } else {
+    range = SRAM_START_ADDR - 1;
+  }
+  
+  Serial.println("Addr: DEC, HEX, BIN");
+  RTC.readRTC(addr, values, range);
+  for (addr = 0; addr < range; addr++) {
+    Serial.print(addr, HEX);
+    Serial.print(": ");
+    Serial.print(values[addr], DEC);
+    Serial.print(", ");
+    Serial.print(values[addr], HEX);
+    Serial.print(", ");
+    Serial.println(values[addr], BIN);
+  }
+}
+
+/* Functions for handling button input
+ *  
+ */
+boolean check_for_no_button_input_timeout() {
+  boolean timeout = false;
+  uint32_t current_time = millis();
+
+  if ((current_time - g_button_no_input_time) > BUTTON_TIMEOUT) {
+    Serial.println(F("Button timeout, go to sleep"));
+    g_button_no_input_time = 0;
+    timeout = true;
+  }
+  
+  return timeout;
+}
+
+void handle_button_push_interrupt() {
+  uint8_t open_button_status = digitalRead(OPEN_BUTTON_PIN);
+  uint8_t close_button_status = digitalRead(CLOSE_BUTTON_PIN);
+
+  if ((open_button_status == HIGH) && (close_button_status == HIGH)) {
+    //Both buttons are pushed...just stop
+    g_button_no_input_time = millis();
+    stop_door_movement();
+  } else if (open_button_status == HIGH) {
+    g_button_no_input_time = millis();
+    open_door();
+  } else if (close_button_status == HIGH) {
+    g_button_no_input_time = millis();
+    close_door(); 
+  } else {
+    //No buttons are pressed, stop motor
+    //set button interrupt flag to false to put into sleep
+    stop_door_movement();
+    g_button_int_flag = false;
+  }
+}
+
+/* Functions related to linear actuator */
+void close_door() {
+  if (g_is_motor_moving == false) {
     Serial.println(F("Close Door"));
-    digitalWrite(enablePin, HIGH);
+    digitalWrite(MOTOR_ENABLE_PIN, HIGH);
     delay(1);
-    if (fullPower) {
-      digitalWrite(RPWMPin, LOW);
-      digitalWrite(LPWMPin, HIGH);
-    } else {
-      digitalWrite(RPWMPin, LOW);
-      analogWrite(LPWMPin, 127);
-    }
-    motorMoving = true;
+    digitalWrite(MOTOR_R_PWM_PIN, LOW);
+    digitalWrite(MOTOR_L_PWM_PIN, HIGH);
+    g_is_motor_moving = true;
   }
 }
 
-void motorOpen() {
-  if (motorMoving == false) {
+void open_door() {
+  if (g_is_motor_moving == false) {
     Serial.println(F("Open Door"));
-    digitalWrite(enablePin, HIGH);
+    digitalWrite(MOTOR_ENABLE_PIN, HIGH);
     delay(1);
-    digitalWrite(RPWMPin, HIGH);
-    digitalWrite(LPWMPin, LOW);
-    motorMoving = true;
+    digitalWrite(MOTOR_R_PWM_PIN, HIGH);
+    digitalWrite(MOTOR_L_PWM_PIN, LOW);
+    g_is_motor_moving = true;
   }
 }
 
-void motorStop() {
+void stop_door_movement() {
   Serial.println(F("Stop Motor"));
-  digitalWrite(RPWMPin, LOW);
-  digitalWrite(LPWMPin, LOW);
-  digitalWrite(enablePin, LOW);
-  motorMoving = false;
+  digitalWrite(MOTOR_R_PWM_PIN, LOW);
+  digitalWrite(MOTOR_L_PWM_PIN, LOW);
+  digitalWrite(MOTOR_ENABLE_PIN, LOW);
+  g_is_motor_moving = false;
 }
 
-void printDateTime(time_t t) {
-  printDate(t);
+/* Functions for writing date and time to serial
+ *  
+ */
+void print_date_time(time_t t) {
+  print_date(t);
   Serial.print(" ");
-  printTime(t);
+  print_time(t);
   Serial.print("\n");
 }
 
-void printTime(time_t t) {
-  printI00(hour(t), ':');
-  printI00(minute(t), ':');
-  printI00(second(t), ' ');
+void print_time(time_t t) {
+  print_I00(hour(t), ':');
+  print_I00(minute(t), ':');
+  print_I00(second(t), ' ');
 }
 
-void printDate(time_t t) {
-  printI00(day(t), 0);
+void print_date(time_t t) {
+  print_I00(day(t), 0);
   Serial.print(monthShortStr(month(t)));
   Serial.print(year(t), DEC);
 }
 
-void printI00(int val, char delim) {
+void print_I00(int val, char delim) {
   if (val < 10) {
     Serial.print(F("0"));
   }
@@ -367,128 +431,125 @@ void printI00(int val, char delim) {
   return;
 }
 
-float getJulianDayFromUnix(uint32_t unixSecs) {
+/* Functions for calculating sunrise and sunset
+ *  
+ */
+ 
+float get_julian_day_from_unix(uint32_t unix_secs) {
   //unixSecs is the date you want specified in seconds from 1/1/1970 GMT
   //  the time should be at midnight (0:0:0)
   // formula:
-  //     ((unixSecs / 86400.0) + 2440587.5) to convert seconds from 1/1/1970 to julian
+  //     ((unix_secs / 86400.0) + 2440587.5) to convert seconds from 1/1/1970 to julian
   //     add the julian time of noon because JDN starts at noon
-  //     ((timezone/12) * julianNoon) is the ratio to convert timezone offset to julian
-  return (((unixSecs / 86400.0) + 2440587.5) + julianNoon - ((timezone/12) * julianNoon));
+  //     ((TIMEZONE/12) * JULIAN_NOON) is the ratio to convert timezone offset to julian
+  return (((unix_secs / 86400.0) + 2440587.5) + JULIAN_NOON - ((TIMEZONE/12) * JULIAN_NOON));
    
 }
 
-float getJulianCenturyFromJulianDay(float julianDay) {
-  return (julianDay - 2451545)/36525;
+float get_julian_century_from_julian_day(float julian_day) {
+  return (julian_day - 2451545)/36525;
 }
 
-float getGeomMeanLongSunInDeg(float julianCentury) {
-  return fmod(280.46646 + julianCentury * (36000.76983 + julianCentury * 0.0003032), 360.0);
+float get_geom_mean_long_sun_in_deg(float julian_century) {
+  return fmod(280.46646 + julian_century * (36000.76983 + julian_century * 0.0003032), 360.0);
 }
 
-float getGeomMeanAnomSunInDeg(float julianCentury) {
-  return (357.52911 + julianCentury * (35999.05029 - 0.0001537 * julianCentury));
+float get_geom_mean_anom_sun_in_deg(float julian_century) {
+  return (357.52911 + julian_century * (35999.05029 - 0.0001537 * julian_century));
 }
 
-float getEccentEarthOrbit(float julianCentury) {
-  return (0.016708634 - julianCentury * (0.000042037 + 0.0000001267 * julianCentury));
+float get_eccent_earth_orbit(float julian_century) {
+  return (0.016708634 - julian_century * (0.000042037 + 0.0000001267 * julian_century));
 }
 
-float getSunEqOfCtr(float julianCentury, float geomMeanAnomSun) {
-  return (sin(degreesToRadians(geomMeanAnomSun)) * 
-          (1.914602 - julianCentury * (0.004817 + 0.000014 * julianCentury)) + 
-          sin(degreesToRadians(2 * geomMeanAnomSun)) * 
-          (0.019993 - 0.000101 * julianCentury) + 
-          sin(degreesToRadians(3 * geomMeanAnomSun)) * 0.000289);
+float get_sun_eq_of_ctr(float julian_century, float geom_mean_anom_sun) {
+  return (sin(degrees_to_radians(geom_mean_anom_sun)) * 
+          (1.914602 - julian_century * (0.004817 + 0.000014 * julian_century)) + 
+          sin(degrees_to_radians(2 * geom_mean_anom_sun)) * 
+          (0.019993 - 0.000101 * julian_century) + 
+          sin(degrees_to_radians(3 * geom_mean_anom_sun)) * 0.000289);
 }
 
-float getSunTrueLongInDeg(float geomMeanLongSun, float sunEqOfCtr) {
-  return (geomMeanLongSun + sunEqOfCtr);
-}
-
-/*
-float getSunTrueAnomInDeg(float geomMeanAnomSun, float sunEqOfCtr) {
-  return (geomMeanAnomSun + sunEqOfCtr);
-}
-
-
-float getSunRadVectorInAUs(float eccentEarthOrbit, float sunTrueAnom) {
-  return ((1.000001018 * (1 - eccentEarthOrbit * eccentEarthOrbit)) / 
-          (1 + eccentEarthOrbit * cos(degreesToRadians(sunTrueAnom))));
-}
-*/
-
-float getSunAppLongInDeg(float sunTrueLong, float julianCentury) {
-  return (sunTrueLong - 0.00569 - 0.00478 * sin(degreesToRadians(125.04 - 1934.136 * julianCentury)));
-}
-
-float getMeanObliqEclipticInDeg(float julianCentury) {
-  return (23 + (26 + ((21.448 - julianCentury * 
-          (46.815 + julianCentury * (0.00059 - julianCentury * 0.001813))))/60)/60);
-}
-
-float getObliqCorrInDeg(float meanObliqEcliptic, float julianCentury) {
-  return (meanObliqEcliptic + 0.00256 * cos(degreesToRadians(125.04 - 1934.136 * julianCentury)));
+float get_sun_true_long_in_deg(float geom_mean_long_sun, float sun_eq_of_ctr) {
+  return (geom_mean_long_sun + sun_eq_of_ctr);
 }
 
 /*
-float getSunRtAscenInDeg(float sunAppLong, float obliqCorr) {
-  return (radiansToDegrees(atan2(cos(degreesToRadians(obliqCorr)) * sin(degreesToRadians(sunAppLong)), 
-                                 cos(degreesToRadians(sunAppLong)))));
+float get_sun_true_anom_in_deg(float geom_mean_anom_sun, float sun_eq_of_ctr) {
+  return (geom_mean_anom_sun + sun_eq_of_ctr);
+}
+
+
+float get_sun_rad_vector_in_AUs(float eccent_earth_orbit, float sun_true_anom) {
+  return ((1.000001018 * (1 - eccent_earth_orbit * eccent_earth_orbit)) / 
+          (1 + eccent_earth_orbit * cos(degrees_to_radians(sun_true_anom))));
 }
 */
 
-float getSunDeclinInDeg(float sunAppLong, float obliqCorr) {
-  return (radiansToDegrees(asin(sin(degreesToRadians(obliqCorr)) * sin(degreesToRadians(sunAppLong)))));
+float get_sun_app_long_in_deg(float sun_true_long, float julian_century) {
+  return (sun_true_long - 0.00569 - 0.00478 * sin(degrees_to_radians(125.04 - 1934.136 * julian_century)));
 }
 
-float getVarY(float obliqCorr) {
-  return (tan(degreesToRadians(obliqCorr/2)) * tan(degreesToRadians(obliqCorr/2)));
+float get_mean_obliq_ecliptic_in_deg(float julian_century) {
+  return (23 + (26 + ((21.448 - julian_century * 
+          (46.815 + julian_century * (0.00059 - julian_century * 0.001813))))/60)/60);
 }
 
-float getEqOfTimeInMin(float varY, float eccentEarthOrbit, float geomMeanLongSun, float geomMeanAnomSun) {
-  return (4 * radiansToDegrees(varY * sin(2 * degreesToRadians(geomMeanLongSun))
-          - 2 * eccentEarthOrbit * sin(degreesToRadians(geomMeanAnomSun)) 
-          + 4 * eccentEarthOrbit * varY * sin(degreesToRadians(geomMeanAnomSun)) 
-          * cos(2 * degreesToRadians(geomMeanLongSun)) - 0.5 * varY * varY 
-          * sin(4 * degreesToRadians(geomMeanLongSun)) - 1.25 * eccentEarthOrbit * eccentEarthOrbit 
-          * sin(2 * degreesToRadians(geomMeanAnomSun))));
+float get_obliq_corr_in_deg(float mean_obliq_ecliptic, float julian_century) {
+  return (mean_obliq_ecliptic + 0.00256 * cos(degrees_to_radians(125.04 - 1934.136 * julian_century)));
+}
+
+/*
+float get_sun_rt_ascen_in_deg(float sun_app_long, float obliq_corr) {
+  return (radians_to_degrees(atan2(cos(degrees_to_radians(obliq_corr)) * sin(degrees_to_radians(sun_app_long)), 
+                                 cos(degrees_to_radians(sun_app_long)))));
+}
+*/
+
+float get_sun_declin_in_deg(float sun_app_long, float obliq_corr) {
+  return (radians_to_degrees(asin(sin(degrees_to_radians(obliq_corr)) * sin(degrees_to_radians(sun_app_long)))));
+}
+
+float get_var_y(float obliq_corr) {
+  return (tan(degrees_to_radians(obliq_corr/2)) * tan(degrees_to_radians(obliq_corr/2)));
+}
+
+float get_eq_of_time_in_min(float var_y, float eccent_earth_orbit, float geom_mean_long_sun, float geom_mean_anom_sun) {
+  return (4 * radians_to_degrees(var_y * sin(2 * degrees_to_radians(geom_mean_long_sun))
+          - 2 * eccent_earth_orbit * sin(degrees_to_radians(geom_mean_anom_sun)) 
+          + 4 * eccent_earth_orbit * var_y * sin(degrees_to_radians(geom_mean_anom_sun)) 
+          * cos(2 * degrees_to_radians(geom_mean_long_sun)) - 0.5 * var_y * var_y 
+          * sin(4 * degrees_to_radians(geom_mean_long_sun)) - 1.25 * eccent_earth_orbit * eccent_earth_orbit 
+          * sin(2 * degrees_to_radians(geom_mean_anom_sun))));
 } 
 
-float getHASunriseInDeg(float sunDeclin) {
-  return (radiansToDegrees(acos(cos(degreesToRadians(90.833)) /
-          (cos(degreesToRadians(latitude)) * cos(degreesToRadians(sunDeclin))) - 
-           tan(degreesToRadians(latitude)) * tan(degreesToRadians(sunDeclin)))));
+float get_ha_sunrise_in_deg(float sun_declin) {
+  return (radians_to_degrees(acos(cos(degrees_to_radians(90.833)) /
+          (cos(degrees_to_radians(LATITUDE)) * cos(degrees_to_radians(sun_declin))) - 
+           tan(degrees_to_radians(LATITUDE)) * tan(degrees_to_radians(sun_declin)))));
 }
 
-float getSolarNoon(float eqOfTime) {
-  return (720 - 4 * longitude - eqOfTime + timezone * 60) / 1440;
+float get_solar_noon(float eq_of_time) {
+  return (720 - 4 * LONGITUDE - eq_of_time + TIMEZONE * 60) / 1440;
 }
 
-float getSunrise(float solarNoon, float haSunrise) {
-  return ((solarNoon * 1440 - haSunrise * 4) / 1440);
+float get_sunrise(float solar_noon, float ha_sunrise) {
+  return ((solar_noon * 1440 - ha_sunrise * 4) / 1440);
 }
 
-float getSunset(float solarNoon, float haSunrise) {
-  return ((solarNoon * 1440 + haSunrise * 4) / 1440);
+float get_sunset(float solar_noon, float ha_sunrise) {
+  return ((solar_noon * 1440 + ha_sunrise * 4) / 1440);
 }
 
-float getSunlightDurationInMin(float haSunrise) {
-  return (8 * haSunrise);
+float get_sunlight_duration_in_min(float ha_sunrise) {
+  return (8 * ha_sunrise);
 }
 
-float getTrueSolarTime(float eqOfTime) {
-  return fmod(julianNoon * 1440 + eqOfTime + 4 * longitude - 60 * timezone, 1440);
+float get_true_solar_time(float eq_of_time) {
+  return fmod(JULIAN_NOON * 1440 + eq_of_time + 4 * LONGITUDE - 60 * TIMEZONE, 1440);
 }
 
-float getNumMinutesFromJulianFraction(float julianFraction) {
-  return round((12.0 * (julianFraction/julianNoon)) * 60);
+float get_num_minutes_from_julian_fraction(float julian_fraction) {
+  return round((12.0 * (julian_fraction/JULIAN_NOON)) * 60);
 }
 
-inline float degreesToRadians(float deg) {
-  return (deg * M_PI / 180.0);
-}
-
-inline float radiansToDegrees(float rad) {
-  return (rad * 180.0 / M_PI);
-}
