@@ -5,7 +5,7 @@ Arduino code to automatically open and close a door based on calculating sunrise
   * Atmega328p (uses interrupts specific to that device)
       * Self built, doesn't have USB or voltage regulator
   * BTS7960B Motor Driver to operate the linear actuator
-  * DS3231 Real Time Clock (RTC) to keep track of time and set alarms
+  * DS3232 Real Time Clock (RTC) to keep track of time and set alarms
   * 12v Linear actuator
   * 2 push buttons
   * LM2596S-ADJ DC-DC 3A Buck Converter (12v to 5v)
