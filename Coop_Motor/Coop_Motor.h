@@ -29,6 +29,8 @@ boolean        g_is_sunrise = false;  //Flag for sunrise..ie open door if true..
 /* Variables to mathematically determine sunrise/sunset */
 const float LATITUDE = 38.89511; // (+ to N)
 const float LONGITUDE = -77.03637; // (- to E)
+const uint8_t ALARM_2_HOURS = 0;  // Set the ALARM_2 hours field
+const uint8_t ALARM_2_MINUTES = 10; // Set the ALARM_2 minutes field
 const float TIMEZONE = -6.0;
 const float SUNRISE_OFFSET = 30.0; //minutes to add to sunrise
 const float SUNSET_OFFSET  = 20.0; //minutes to add to sunset

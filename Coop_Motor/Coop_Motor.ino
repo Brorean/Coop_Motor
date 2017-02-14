@@ -190,7 +190,7 @@ void set_alarms_times(uint8_t alarm_hour, uint8_t alarm_minutes) {
   RTC.setAlarm(ALM1_MATCH_HOURS, 0, alarm_minutes, alarm_hour, 0);
   RTC.alarmInterrupt(ALARM_1, true);
   
-  RTC.setAlarm(ALM2_MATCH_HOURS, 0, 0, 10, 0);
+  RTC.setAlarm(ALM2_MATCH_HOURS, 0, ALARM_2_MINUTES, ALARM_2_HOURS, 0);
   RTC.alarmInterrupt(ALARM_2, true); 
 }
 
